@@ -1,14 +1,11 @@
 const router = require("express").Router();
-const {
-  listInmuebles,
-  getInmuebleById,
-  createInmueble,
-  updateInmueble,
-} = require("../controllers/inmuebles.controller");
+const asyncHandler = require("../middleware/asyncHandler");
+const c = require("../controllers/inmuebles.controller");
 
-router.get("/", listInmuebles);
-router.get("/:id", getInmuebleById);
-router.post("/", createInmueble);
-router.patch("/:id", updateInmueble);
+router.get("/", asyncHandler(c.listInmuebles));
+router.get("/:id", asyncHandler(c.getInmuebleById));
+router.post("/", asyncHandler(c.createInmueble));
+router.patch("/:id", asyncHandler(c.patchInmueble));
+router.get("/disponibles", asyncHandler(c.listDisponiblesPorSector));
 
 module.exports = router;
