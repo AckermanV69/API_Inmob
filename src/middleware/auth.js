@@ -15,7 +15,7 @@ module.exports = function authenticate(req, _res, next) {
 
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    req.userId = payload.userId;
+    req.user = payload;
     next();
   } catch (e) {
     const err = new Error("Token inválido");

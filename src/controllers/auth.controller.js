@@ -1,9 +1,6 @@
-const pool = require("../db/pool");
-const bcrypt = require("bcryptjs");
+const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-
-const JWT_SECRET = process.env.JWT_SECRET || "inmob-secret";
-const JWT_EXPIRES_IN = "7d";
+const pool = require("../db/pool");
 
 function badRequest(message) {
   const err = new Error(message);
@@ -12,58 +9,84 @@ function badRequest(message) {
   return err;
 }
 
+function unauthorized(message) {
+  const err = new Error(message);
+  err.statusCode = 401;
+  err.code = "UNAUTHORIZED";
+  return err;
+}
+
+const API_TO_DB_ROLE = {
+  user: "cliente",
+  admin: "admin",
+};
+
+function mapDbRoleToApiRole(dbRole) {
+  if (dbRole === "admin") return "admin";
+  return "user";
+}
+
 exports.register = async (req, res) => {
-  const { nombre, email, password, telefono, estatus } = req.body;
+  const { nombre, email, password } = req.body;
 
   if (!nombre) throw badRequest("nombre es requerido");
   if (!email) throw badRequest("email es requerido");
   if (!password) throw badRequest("password es requerido");
 
-  const hashed = await bcrypt.hash(String(password), 10);
+  const { rows: existing } = await pool.query(
+    "SELECT id FROM usuarios WHERE email = $1 LIMIT 1;",
+    [email]
+  );
 
-  const sql = `
-    INSERT INTO usuarios (nombre, email, telefono, estatus, password)
-    VALUES ($1,$2,$3,$4,$5)
-    RETURNING id, nombre, email, telefono, estatus;
-  `;
+  if (existing.length) {
+    const err = new Error("Email ya registrado");
+    err.statusCode = 409;
+    err.code = "EMAIL_CONFLICT";
+    throw err;
+  }
 
-  const values = [nombre, email, telefono || null, estatus || null, hashed];
-  const { rows } = await pool.query(sql, values);
+  const password_hash = await bcrypt.hash(String(password), 10);
+  const rolDb = API_TO_DB_ROLE.user;
 
-  res.status(201).json({ ok: true, data: rows[0] });
+  const { rows } = await pool.query(
+    `INSERT INTO usuarios (nombre, email, password_hash, rol, fecha_registro)
+      VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+      RETURNING id, nombre, email, rol, fecha_registro;`,
+    [nombre, email, password_hash, rolDb]
+  );
+
+  const user = rows[0];
+  res.status(201).json({
+    ok: true,
+    data: {
+      id: user.id,
+      nombre: user.nombre,
+      email: user.email,
+      rol: mapDbRoleToApiRole(user.rol),
+      fecha_registro: user.fecha_registro,
+    },
+  });
 };
 
 exports.login = async (req, res) => {
   const { email, password } = req.body;
-
-  if (!email || !password) {
-    throw badRequest("email y password son requeridos");
-  }
+  if (!email || !password) throw badRequest("email y password son requeridos");
 
   const { rows } = await pool.query(
-    `SELECT id, nombre, email, telefono, estatus, password FROM usuarios WHERE email = $1 LIMIT 1;`,
+    "SELECT id, nombre, email, password_hash, rol FROM usuarios WHERE email = $1 LIMIT 1;",
     [email]
   );
 
-  if (!rows.length) {
-    const err = new Error("Credenciales inválidas");
-    err.statusCode = 401;
-    err.code = "UNAUTHORIZED";
-    throw err;
-  }
+  if (!rows.length) throw unauthorized("Credenciales inválidas");
 
   const user = rows[0];
-  const match = await bcrypt.compare(String(password), user.password || "");
+  const match = await bcrypt.compare(String(password), String(user.password_hash));
+  if (!match) throw unauthorized("Credenciales inválidas");
 
-  if (!match) {
-    const err = new Error("Credenciales inválidas");
-    err.statusCode = 401;
-    err.code = "UNAUTHORIZED";
-    throw err;
-  }
-
-  const token = jwt.sign({ userId: user.id }, JWT_SECRET, {
-    expiresIn: JWT_EXPIRES_IN,
+  const jwtSecret = process.env.JWT_SECRET || "inmob-secret";
+  const apiRol = user.rol === "admin" ? "admin" : "user";
+  const token = jwt.sign({ id: user.id, rol: apiRol }, jwtSecret, {
+    expiresIn: "7d",
   });
 
   res.json({
@@ -74,25 +97,18 @@ exports.login = async (req, res) => {
         id: user.id,
         nombre: user.nombre,
         email: user.email,
-        telefono: user.telefono,
-        estatus: user.estatus,
+        rol: apiRol,
       },
     },
   });
 };
 
 exports.me = async (req, res) => {
-  const userId = req.userId;
-  if (!userId) {
-    const err = new Error("No autorizado");
-    err.statusCode = 401;
-    err.code = "UNAUTHORIZED";
-    throw err;
-  }
+  if (!req.user || !req.user.id) throw unauthorized("No autorizado");
 
   const { rows } = await pool.query(
-    `SELECT id, nombre, email, telefono, estatus FROM usuarios WHERE id = $1 LIMIT 1;`,
-    [userId]
+    "SELECT id, nombre, email, rol, fecha_registro FROM usuarios WHERE id = $1 LIMIT 1;",
+    [req.user.id]
   );
 
   if (!rows.length) {
@@ -102,5 +118,15 @@ exports.me = async (req, res) => {
     throw err;
   }
 
-  res.json({ ok: true, data: rows[0] });
+  const user = rows[0];
+  res.json({
+    ok: true,
+    data: {
+      id: user.id,
+      nombre: user.nombre,
+      email: user.email,
+      rol: user.rol === "admin" ? "admin" : "user",
+      fecha_registro: user.fecha_registro,
+    },
+  });
 };
